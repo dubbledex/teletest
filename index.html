@@ -440,6 +440,12 @@
     const voiceMaxSpeedPxPerSec = 2200;
 
     /*
+     * Core limits for voice tracking WPM (fixed missing declarations)
+     */
+    const voiceMinWPM = 80;
+    const voiceMaxWPM = 320;
+
+    /*
     * Stronger focus-bar tracking.
     * Previously 7.5
     */
@@ -470,19 +476,7 @@
      * Keep trusting speech matches for longer.
      * Previously 4500
      */
-    const voiceRelevantMatchKeepaliveMs = 12000;
-
-    const els = {};
-
-    function deepClone(value) {
-      return JSON.parse(JSON.stringify(value));
-    }
-
-    function $(id) {
-      return document.getElementById(id);
-    }
-
-    function clamp(value, min, max) {
+    const voiceRelevantMatch {
       return Math.max(min, Math.min(max, value));
     }
 
@@ -495,34 +489,27 @@
     }
 
     function init() {
-        try {
- 
-            cacheElements();
-            loadState();
-            pruneExpiredScripts();
- 
-            renderSetup();
-            renderKeyBindings();
-            renderScriptLibrary();
-            updateFlipButtons();
- 
-            canvas = els.prompterCanvas;
-            ctx = canvas.getContext("2d", { alpha: false });
- 
-            setupSpeechRecognition();
-            wireUI();
- 
-            console.log(
-            "Teleprompter loaded OK"
-            );
- 
-        } catch (err) {
-            console.error(
-            "Init failed:",
-            err
-        );
+      try {
+        cacheElements();
+        loadState();
+        pruneExpiredScripts();
+
+        renderSetup();
+        renderKeyBindings();
+        renderScriptLibrary();
+        updateFlipButtons();
+
+        canvas = els.prompterCanvas;
+        ctx = canvas.getContext("2d", { alpha: false });
+
+        setupSpeechRecognition();
+        wireUI();
+
+        console.log("Teleprompter loaded OK");
+      } catch (err) {
+        console.error("Init failed:", err);
+      }
     }
-}
 
     function cacheElements() {
       [
@@ -559,11 +546,11 @@
             ...(saved.bindings || {})
           }
         };
-    } catch (err) {
+      } catch (err) {
         console.error(err);
         localStorage.removeItem(STORAGE_KEY);
         state = deepClone(defaultState);
-        }
+      }
     }
 
     function saveState() {
@@ -656,18 +643,9 @@
         if (item.id === state.activeScriptId) row.classList.add("active");
 
         const preview = (item.text || "").replace(/\s+/g, " ").trim().slice(0, 120);
-        const updated =
-             Number(
-                item.updatedAt ||
-                 item.createdAt ||
-                 0
-            );
+        const updated = Number(item.updatedAt || item.createdAt || 0);
 
-        const expiresIn =
-            Math.max(
-                0,
-                (updated + LIBRARY_TTL_MS) - nowMs()
-            );
+        const expiresIn = Math.max(0, (updated + LIBRARY_TTL_MS) - nowMs());
         const hoursLeft = Math.ceil(expiresIn / (60 * 60 * 1000));
 
         row.innerHTML = `
@@ -779,6 +757,12 @@
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = "en-US";
+
+      recognition.onstart = () => {
+        isListening = true;
+        updateVoiceUI();
+        console.log("Microphone connected: Speech recognition is listening.");
+      };
 
       recognition.onresult = handleSpeechResult;
       recognition.onerror = event => {
@@ -1214,7 +1198,19 @@
 
         for (const word of words) {
           const test = line ? `${line} ${word}` : word;
-          if (ctx.measureText(test).width <= maxWidth || !line) {
+          KeepaliveMs = 12000;
+
+    const els = {};
+
+    function deepClone(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+
+    function $(id) {
+      return document.getElementById(id);
+    }
+
+    function clamp(value, min, max)if (ctx.measureText(test).width <= maxWidth || !line) {
             line = test;
           } else {
             result.push(line);
@@ -1426,19 +1422,10 @@
       progress = clamp(progress, 0, 1);
 
       const focusTarget = currentTarget + progress * (nextTarget - currentTarget);
-      /*
-        If speech has fallen behind,
-        stop and wait.
-        */
 
-      if (
-        voiceDetectedLine <
-        voiceCurrentLine - 2
-      ) {
-
-        currentSpeed =
-        currentSpeed * 0.85;
-
+      // If speech has fell far behind, decelerate smoothly to hold.
+      if (voiceDetectedLine < voiceCurrentLine - 2) {
+        currentSpeed = currentSpeed * 0.85;
         return;
       }
 
@@ -1447,43 +1434,30 @@
         ? (maxScroll * (voiceCurrentWPM / 60)) / totalWords
         : voiceCruiseMinPxPerSec;
 
-      // Main improvement:
-      // aggressively close focus-bar error, not just gently chase it.
       const focusError = focusTarget - scrollPos;
       const followSpeed = Math.max(0, focusError * voiceSpringFactor);
 
-      // Extra catch-up if we are materially behind target.
-      const catchupSpeed = Math.max(
-        0,
-        focusError * voiceCatchupBoostFactor * 0.65
-        );
+      // Extra catch-up if we are materially behind target
+      const catchupSpeed = Math.max(0, focusError * voiceCatchupBoostFactor * 0.65);
 
       let cruiseSpeed = Math.max(voiceCruiseMinPxPerSec, basePxPerSec * 0.55);
 
-      // If recognition has gone stale, rely less on cruise.
       if (sinceStrongMatch > voiceRelevantMatchKeepaliveMs) {
         cruiseSpeed *= 0.85;
       }
 
       cruiseSpeed *= activityFactor;
 
-      // Phantom target never goes backward.
       voicePhantomScroll = Math.max(voicePhantomScroll, focusTarget);
       voicePhantomScroll = Math.max(voicePhantomScroll, scrollPos);
       voicePhantomScroll = Math.min(maxScroll, voicePhantomScroll + cruiseSpeed * dt);
 
       const phantomError = Math.max(0, voicePhantomScroll - scrollPos);
 
-      let speed = Math.max(
-        followSpeed,
-        catchupSpeed,
-        phantomError * 6.5
-      );
-
+      let speed = Math.max(followSpeed, catchupSpeed, phantomError * 6.5);
       speed = Math.min(speed, voiceMaxSpeedPxPerSec);
       speed *= activityFactor;
 
-      // If we are very close and speech has faded, settle down.
       if (Math.abs(focusError) < 2 && activityFactor < 0.2) {
         speed = 0;
       }
@@ -1537,8 +1511,10 @@
       const { lineIndex, progress, score } = match;
 
       if (!voiceStarted) {
-        if (lineIndex === 0 && score >= voiceStartThreshold) {
+        // Fallback: Unlock voice started tracking if any of the first three lines match, preventing lockups
+        if (lineIndex <= 2 && score >= voiceStartThreshold) {
           voiceStarted = true;
+          voiceCurrentLine = lineIndex;
           voiceLastSpeechTime = now;
           voiceLastStrongMatchTime = now;
         } else {
@@ -1546,23 +1522,12 @@
         }
       }
 
-      if (!isLinePlausible(lineIndex, now))
+      if (!isLinePlausible(lineIndex, now)) return;
+
+      // Allow tracker recovery backward, but prevent scrolling backward
+      if (lineIndex < voiceCurrentLine - 8 && score < 0.55) {
         return;
-    
-    /*
-     Allow tracker recovery.
-    
-     We can move tracking backwards,
-     but not scrolling.
-    */
-    
-    if (
-        lineIndex <
-        voiceCurrentLine - 8 &&
-        score < 0.55
-    ) {
-        return;
-    }
+      }
 
       voiceLastSpeechTime = now;
       if (score >= voiceMatchThreshold) {
@@ -1586,31 +1551,12 @@
 
       voiceDetectedLine = lineIndex;
 
-    /*
-    Allow strong matches
-    to re-lock tracker.
-    */
-
-    if (
-    score > 0.60
-    ) {
-
-        voiceCurrentLine =
-            lineIndex;
-
-    } else {
-
-        /*
-          slow convergence
-        */
-
-    voiceCurrentLine =
-        Math.round(
-            voiceCurrentLine * 0.85 +
-            lineIndex * 0.15
-        );
-
-    }
+      // Force instant pointer adjustment if match score is exceptionally solid
+      if (score > 0.60) {
+        voiceCurrentLine = lineIndex;
+      } else {
+        voiceCurrentLine = Math.round(voiceCurrentLine * 0.85 + lineIndex * 0.15);
+      }
       voiceLineProgress = clamp(progress, 0.01, 1);
 
       const lineScroll = getIdealScrollForLine(lineIndex);
@@ -1644,89 +1590,37 @@
       return best && best.score >= voiceMatchThreshold ? best : null;
     }
 
-function scoreLineMatch(
-    lineWordsArr,
-    corpusWords
-) {
+    function scoreLineMatch(lineWordsArr, corpusWords) {
+      if (!lineWordsArr || !lineWordsArr.length || !corpusWords.length) {
+        return { score: 0, progress: 0 };
+      }
 
-    if (
-        !lineWordsArr ||
-        !lineWordsArr.length ||
-        !corpusWords.length
-    ) {
+      let matched = 0;
+      let longestRun = 0;
+      let currentRun = 0;
+      let lastMatchIdx = -1;
 
-        return {
-            score: 0,
-            progress: 0
-        };
-
-    }
-
-    let matched = 0;
-    let longestRun = 0;
-    let currentRun = 0;
-    let lastMatchIdx = -1;
-
-    for (
-        let i = 0;
-        i < lineWordsArr.length;
-        i++
-    ) {
-
-        const word =
-            lineWordsArr[i];
-
-        const pos =
-            corpusWords.lastIndexOf(
-                word
-            );
+      for (let i = 0; i < lineWordsArr.length; i++) {
+        const word = lineWordsArr[i];
+        const pos = corpusWords.lastIndexOf(word);
 
         if (pos >= 0) {
-
-            matched++;
-
-            currentRun++;
-
-            if (
-                currentRun >
-                longestRun
-            ) {
-
-                longestRun =
-                    currentRun;
-
-            }
-
-            lastMatchIdx = i;
-
+          matched++;
+          currentRun++;
+          if (currentRun > longestRun) {
+            longestRun = currentRun;
+          }
+          lastMatchIdx = i;
         } else {
-
-            currentRun = 0;
-
+          currentRun = 0;
         }
+      }
+
+      const progress = lastMatchIdx >= 0 ? (lastMatchIdx + 1) / lineWordsArr.length : 0;
+      const score = (matched / lineWordsArr.length) * 0.55 + (longestRun / lineWordsArr.length) * 0.45;
+
+      return { score, progress };
     }
-
-    const progress =
-        lastMatchIdx >= 0
-            ? (lastMatchIdx + 1) /
-              lineWordsArr.length
-            : 0;
-
-    const score =
-        (
-            matched /
-            lineWordsArr.length
-        ) * 0.55 +
-        (
-            longestRun /
-            lineWordsArr.length
-        ) * 0.45;
-
-    return {
-        score,
-        progress
-    };
-}
 
     function getMaxPlausibleLine(now) {
       const elapsedSec = Math.max(0.1, (now - voiceSessionStartTime) / 1000);
@@ -1748,6 +1642,10 @@ function scoreLineMatch(
     }
 
     function isLinePlausible(lineIndex, now) {
+      // Direct pass if matching lines are adjacent to the active pointer (safety fallback)
+      if (Math.abs(lineIndex - voiceCurrentLine) <= 3) {
+        return true;
+      }
       return lineIndex <= getMaxPlausibleLine(now);
     }
 
