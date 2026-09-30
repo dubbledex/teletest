@@ -1394,7 +1394,8 @@
       return total;
     }
 
-    function updateVoiceScroll(dt, nowPerf) {
+function updateVoiceScroll(dt, nowPerf) {
+      // 1. SAFETY: If voice hasn't started, do nothing.
       if (!voiceStarted) {
         currentSpeed = 0;
         return;
@@ -1402,95 +1403,99 @@
 
       const now = nowPerf;
       const sinceSpeech = voiceLastSpeechTime ? (now - voiceLastSpeechTime) : 999999;
-      const sinceStrongMatch = voiceLastStrongMatchTime ? (now - voiceLastStrongMatchTime) : 999999;
-
-      let activityFactor = 1;
+      
+      // 2. ACTIVITY FACTOR (Pause on Lag)
+      // Determines if we should move (1.0) or stop (0.0) based on silence.
+      let activityFactor = 0;
       if (sinceSpeech <= voiceSilenceHoldMs) {
-        activityFactor = 1;
+        activityFactor = 1.0;
       } else if (sinceSpeech >= voiceSilenceStopMs) {
-        activityFactor = 0;
+        activityFactor = 0.0;
       } else {
+        // Smooth decay between hold and stop
         const t = (sinceSpeech - voiceSilenceHoldMs) / (voiceSilenceStopMs - voiceSilenceHoldMs);
-        activityFactor = 1 - t;
+        activityFactor = 1.0 - t;
       }
 
+      // 3. CALCULATE IDEAL TARGET POSITION
+      // Where SHOULD we be based on the current detected line?
       const currentTarget = getIdealScrollForLine(voiceCurrentLine);
       const nextTarget = getIdealScrollForLine(Math.min(lines.length - 1, voiceCurrentLine + 1));
-
+      
+      // Interpolate within the line based on progress (0.0 to 1.0)
       let progress = clamp(voiceLineProgress, 0, 1);
-
-      // Encourage smoother crossover near end-of-line.
-      if (progress > 0.72) {
-        progress = 0.72 + (progress - 0.72) * 1.35;
+      
+      // Smooth out the end-of-line transition to prevent jitter
+      if (progress > 0.75) {
+        progress = 0.75 + (progress - 0.75) * 1.5;
       }
       progress = clamp(progress, 0, 1);
 
-      const focusTarget = currentTarget + progress * (nextTarget - currentTarget);
-      /*
-        If speech has fallen behind,
-        stop and wait.
-        */
+      const idealFocusTarget = currentTarget + progress * (nextTarget - currentTarget);
 
-      if (
-        voiceDetectedLine <
-        voiceCurrentLine - 2
-      ) {
+      // 4. FORWARD-ONLY LOGIC (The "Ratchet" Mechanism)
+      // The target we chase (voicePhantomScroll) is NEVER allowed to decrease.
+      // This ensures no backwards motion on screen, even if recognition glitches.
+      if (idealFocusTarget > voicePhantomScroll) {
+        voicePhantomScroll = idealFocusTarget;
+      }
+      
+      // Ensure phantom scroll never exceeds max
+      voicePhantomScroll = Math.min(voicePhantomScroll, maxScroll);
 
-        currentSpeed =
-        currentSpeed * 0.85;
+      // 5. ERROR CALCULATION & STRONG RE-ALIGNMENT
+      // How far behind are we? (Positive means we are behind target)
+      const errorGap = voicePhantomScroll - scrollPos;
 
-        return;
+      let targetSpeed = 0;
+
+      if (errorGap > 2) {
+        // We are behind. Calculate speed needed to catch up.
+        
+        // Base spring force (proportional to error)
+        const springForce = errorGap * voiceSpringFactor; 
+        
+        // Extra boost for large gaps (Speech Recovery)
+        const catchupBoost = errorGap > 50 ? errorGap * (voiceCatchupBoostFactor / 10) : 0; 
+        
+        targetSpeed = springForce + catchupBoost;
+        
+        // Cap maximum speed to prevent motion sickness
+        targetSpeed = Math.min(targetSpeed, voiceMaxSpeedPxPerSec);
+      } else {
+        // We are very close. Just gently align or stop.
+        targetSpeed = errorGap * 2.0; 
       }
 
-      const totalWords = getTotalWordCount();
-      const basePxPerSec = totalWords > 0
-        ? (maxScroll * (voiceCurrentWPM / 60)) / totalWords
-        : voiceCruiseMinPxPerSec;
-
-      // Main improvement:
-      // aggressively close focus-bar error, not just gently chase it.
-      const focusError = focusTarget - scrollPos;
-      const followSpeed = Math.max(0, focusError * voiceSpringFactor);
-
-      // Extra catch-up if we are materially behind target.
-      const catchupSpeed = Math.max(
-        0,
-        focusError * voiceCatchupBoostFactor * 0.65
-        );
-
-      let cruiseSpeed = Math.max(voiceCruiseMinPxPerSec, basePxPerSec * 0.55);
-
-      // If recognition has gone stale, rely less on cruise.
-      if (sinceStrongMatch > voiceRelevantMatchKeepaliveMs) {
-        cruiseSpeed *= 0.85;
+      // 6. APPLY ACTIVITY FACTOR (Pause when speech lags)
+      // If silence is detected, force speed to 0 immediately.
+      if (activityFactor <= 0.1) {
+        targetSpeed = 0;
+      } else {
+        targetSpeed *= activityFactor;
       }
 
-      cruiseSpeed *= activityFactor;
+      // 7. SMOOTHING (Damping)
+      // Instead of setting speed directly, we lerp current speed to target speed.
+      // This removes jitter and makes acceleration/deceleration feel physical.
+      // 0.15 is a good balance: snappy enough to catch up, smooth enough to not jitter.
+      const smoothingFactor = 0.15; 
+      currentSpeed = currentSpeed + (targetSpeed - currentSpeed) * smoothingFactor;
 
-      // Phantom target never goes backward.
-      voicePhantomScroll = Math.max(voicePhantomScroll, focusTarget);
-      voicePhantomScroll = Math.max(voicePhantomScroll, scrollPos);
-      voicePhantomScroll = Math.min(maxScroll, voicePhantomScroll + cruiseSpeed * dt);
+      // 8. APPLY MOVEMENT
+      // Ensure we never move backwards
+      if (currentSpeed < 0) currentSpeed = 0;
 
-      const phantomError = Math.max(0, voicePhantomScroll - scrollPos);
-
-      let speed = Math.max(
-        followSpeed,
-        catchupSpeed,
-        phantomError * 6.5
-      );
-
-      speed = Math.min(speed, voiceMaxSpeedPxPerSec);
-      speed *= activityFactor;
-
-      // If we are very close and speech has faded, settle down.
-      if (Math.abs(focusError) < 2 && activityFactor < 0.2) {
-        speed = 0;
-      }
-
-      currentSpeed = currentSpeed * 0.55 + speed * 0.45;
       scrollPos += currentSpeed * dt;
+      
+      // Final clamp to ensure we never go out of bounds
       scrollPos = clamp(scrollPos, 0, maxScroll);
+      
+      // Safety: If we hit the end, stop.
+      if (scrollPos >= maxScroll - 1) {
+        scrollPos = maxScroll;
+        currentSpeed = 0;
+      }
     }
 
     function normaliseForSpeech(text) {
