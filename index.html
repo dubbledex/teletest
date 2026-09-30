@@ -95,6 +95,11 @@
       70% { box-shadow: 0 0 0 14px rgba(34, 197, 94, 0); }
       100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
     }
+
+    .library-item.active {
+      border-color: #3b82f6 !important;
+      background: rgba(30, 41, 59, 0.95) !important;
+    }
   </style>
 </head>
 
@@ -204,7 +209,7 @@
             </div>
 
             <p class="text-xs text-slate-400 leading-relaxed">
-              Voice mode waits for the opening words, then continuously follows the currently spoken line and estimates smooth transitions between lines.
+              Voice mode waits for opener lock, tracks the current line, estimates WPM, and accelerates aggressively to keep the spoken line in the focus zone.
             </p>
           </div>
 
@@ -271,8 +276,30 @@
         </div>
       </section>
 
-      <section class="lg:col-span-7">
-        <div class="bg-slate-900 border border-slate-700 rounded-2xl p-6 h-full flex flex-col">
+      <section class="lg:col-span-7 space-y-6">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl p-6">
+          <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+            <div>
+              <h2 class="text-xl font-bold">Script Library</h2>
+              <p class="text-sm text-slate-400 mt-1">Scripts expire automatically after 48 hours.</p>
+            </div>
+
+            <div class="flex flex-wrap gap-2">
+              <button id="saveCurrentScriptBtn" type="button" class="px-4 py-2.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 font-semibold text-sm touch-target">
+                Save Current
+              </button>
+              <button id="importLibraryBtn" type="button" class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 font-semibold text-sm touch-target">
+                Import Script(s)
+              </button>
+              <input id="libraryFileInput" type="file" accept=".txt,.rtf" multiple class="hidden" />
+            </div>
+          </div>
+
+          <div id="scriptLibraryList" class="space-y-3">
+          </div>
+        </div>
+
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl p-6 h-[36rem] flex flex-col">
           <div class="flex justify-between items-end mb-4 gap-3">
             <label class="block flex-grow">
               <span class="block text-sm text-slate-400 mb-2">Script File Name</span>
@@ -327,18 +354,18 @@
   <script>
     "use strict";
 
-    const STORAGE_KEY = "canvas_teleprompter_voice_follow_v8";
+    const STORAGE_KEY = "canvas_teleprompter_voice_library_v9";
+    const LIBRARY_TTL_MS = 48 * 60 * 60 * 1000;
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
     const defaultState = {
       text:
         "Welcome to the Canvas Teleprompter.\n\n" +
-        "This version waits for your opening words before it starts moving.\n\n" +
-        "Then it continuously follows the currently spoken line.\n\n" +
-        "As you near the end of a line, it eases toward the next line.\n\n" +
-        "The focus bar should stay aligned with what you are reading.\n\n" +
-        "If you stop speaking for long enough, the scroll will gradually settle.\n\n" +
-        "The final line will continue until it reaches the focus bar.",
+        "Voice mode should now react more strongly to what you actually say.\n\n" +
+        "It waits for the opening words before movement begins.\n\n" +
+        "Then it tries to keep the current line in the focus bar.\n\n" +
+        "Multiple scripts can now be saved in the built-in library.\n\n" +
+        "Scripts expire automatically after forty eight hours.",
       fileName: "teleprompter-script.txt",
       flipH: false,
       flipV: false,
@@ -353,6 +380,8 @@
       voiceMode: false,
       showVoiceHighlight: true,
       startSpeed: 2,
+      activeScriptId: null,
+      scriptLibrary: [],
       bindings: {
         speedUp: { code: "PageDown", key: "PageDown" },
         speedDown: { code: "PageUp", key: "PageUp" },
@@ -388,7 +417,7 @@
 
     let voiceCurrentLine = 0;
     let voiceLineProgress = 0;
-    let voiceCurrentWPM = 140;
+    let voiceCurrentWPM = 145;
     let voiceSessionStartTime = 0;
     let voicePrevLine = 0;
     let voicePrevLineTime = 0;
@@ -397,8 +426,7 @@
     let voicePhantomScroll = 0;
     let voiceStarted = false;
     let voiceLastSpeechTime = 0;
-    let voiceLastMatchedCorpus = [];
-    let voiceSilenceFade = 0;
+    let voiceLastStrongMatchTime = 0;
 
     let captureAction = null;
 
@@ -408,17 +436,19 @@
     const voiceLineSpacingMultiplier = 1.8;
     const manualLineSpacingMultiplier = 1.45;
 
-    const voiceMinWPM = 70;
-    const voiceMaxWPM = 280;
-    const voiceMaxSpeedPxPerSec = 850;
-    const voiceSpringFactor = 9.0;
-    const voiceSearchAheadLines = 6;
-    const voiceMatchThreshold = 0.34;
-    const voiceStartThreshold = 0.45;
-    const plausibilityBurstMultiplier = 1.6;
-    const voiceSilenceHoldMs = 1200;
-    const voiceSilenceStopMs = 3200;
-    const voiceMinCruisePxPerSec = 10;
+    const voiceMinWPM = 85;
+    const voiceMaxWPM = 290;
+    const voiceMaxSpeedPxPerSec = 1400;
+    const voiceSpringFactor = 12.5;
+    const voiceCatchupBoostFactor = 18.0;
+    const voiceSearchAheadLines = 7;
+    const voiceMatchThreshold = 0.28;
+    const voiceStartThreshold = 0.40;
+    const plausibilityBurstMultiplier = 1.7;
+    const voiceSilenceHoldMs = 900;
+    const voiceSilenceStopMs = 2600;
+    const voiceCruiseMinPxPerSec = 14;
+    const voiceRelevantMatchKeepaliveMs = 1800;
 
     const els = {};
 
@@ -434,19 +464,44 @@
       return Math.max(min, Math.min(max, value));
     }
 
-    function init() {
-      cacheElements();
-      loadState();
-      renderSetup();
-      renderKeyBindings();
-      updateFlipButtons();
-
-      canvas = els.prompterCanvas;
-      ctx = canvas.getContext("2d", { alpha: false });
-
-      setupSpeechRecognition();
-      wireUI();
+    function nowMs() {
+      return Date.now();
     }
+
+    function uid() {
+      return "script_" + Math.random().toString(36).slice(2) + "_" + Date.now();
+    }
+
+    function init() {
+        try {
+ 
+            cacheElements();
+            loadState();
+            pruneExpiredScripts();
+ 
+            renderSetup();
+            renderKeyBindings();
+            renderScriptLibrary();
+            updateFlipButtons();
+ 
+            canvas = els.prompterCanvas;
+            ctx = canvas.getContext("2d", { alpha: false });
+ 
+            setupSpeechRecognition();
+            wireUI();
+ 
+            console.log(
+            "Teleprompter loaded OK"
+            );
+ 
+        } catch (err) {
+            console.error(
+            "Init failed:",
+            err
+        );
+    }
+}
+`
 
     function cacheElements() {
       [
@@ -461,7 +516,8 @@
         "presenterPresetBtn", "resetBindingsBtn",
         "scriptInput", "fileNameInput", "importBtn", "fileInput", "exportTxtBtn",
         "mobileExitBtn", "resetScriptBtn", "voiceToggleBtn", "voiceStatusText",
-        "speedHud", "wpmHud", "modeHud"
+        "speedHud", "wpmHud", "modeHud",
+        "saveCurrentScriptBtn", "importLibraryBtn", "libraryFileInput", "scriptLibraryList"
       ].forEach(id => {
         els[id] = $(id);
       });
@@ -476,18 +532,34 @@
         state = {
           ...deepClone(defaultState),
           ...saved,
+          scriptLibrary: Array.isArray(saved.scriptLibrary) ? saved.scriptLibrary : [],
           bindings: {
             ...deepClone(defaultState.bindings),
             ...(saved.bindings || {})
           }
         };
-      } catch {
+    } catch (err) {
+        console.error(err);
+        localStorage.removeItem(STORAGE_KEY);
         state = deepClone(defaultState);
-      }
+        }
     }
 
     function saveState() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }
+
+    function pruneExpiredScripts() {
+      const cutoff = nowMs() - LIBRARY_TTL_MS;
+      state.scriptLibrary = (state.scriptLibrary || []).filter(item => {
+        return Number(item.updatedAt || item.createdAt || 0) >= cutoff;
+      });
+
+      if (state.activeScriptId && !state.scriptLibrary.some(item => item.id === state.activeScriptId)) {
+        state.activeScriptId = null;
+      }
+
+      saveState();
     }
 
     function renderSetup() {
@@ -541,6 +613,139 @@
       }
     }
 
+    function renderScriptLibrary() {
+      pruneExpiredScripts();
+
+      const root = els.scriptLibraryList;
+      root.innerHTML = "";
+
+      if (!state.scriptLibrary.length) {
+        const empty = document.createElement("div");
+        empty.className = "rounded-xl border border-slate-700 bg-slate-950 px-4 py-4 text-sm text-slate-400";
+        empty.textContent = "No saved scripts yet. Import or save the current editor content.";
+        root.appendChild(empty);
+        return;
+      }
+
+      const sorted = [...state.scriptLibrary].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+      for (const item of sorted) {
+        const row = document.createElement("div");
+        row.className = "library-item rounded-xl border border-slate-700 bg-slate-950 px-4 py-4";
+        if (item.id === state.activeScriptId) row.classList.add("active");
+
+        const preview = (item.text || "").replace(/\s+/g, " ").trim().slice(0, 120);
+        const updated =
+             Number(
+                item.updatedAt ||
+                 item.createdAt ||
+                 0
+            );
+
+        const expiresIn =
+            Math.max(
+                0,
+                (updated + LIBRARY_TTL_MS) - nowMs()
+            );
+        const hoursLeft = Math.ceil(expiresIn / (60 * 60 * 1000));
+
+        row.innerHTML = `
+          <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div class="min-w-0">
+              <div class="font-bold text-white truncate">${escapeHtml(item.name || "Untitled Script")}</div>
+              <div class="text-xs text-slate-400 mt-1">Expires in ~${hoursLeft}h</div>
+              <div class="text-sm text-slate-300 mt-2 break-words">${escapeHtml(preview || "(empty script)")}</div>
+            </div>
+            <div class="flex gap-2 shrink-0">
+              <button data-load="${item.id}" class="px-3 py-2 rounded-lg bg-blue-700 hover:bg-blue-600 text-white font-semibold text-sm touch-target">Load</button>
+              <button data-delete="${item.id}" class="px-3 py-2 rounded-lg bg-red-700 hover:bg-red-600 text-white font-semibold text-sm touch-target">Delete</button>
+            </div>
+          </div>
+        `;
+        root.appendChild(row);
+      }
+
+      root.querySelectorAll("[data-load]").forEach(btn => {
+        btn.addEventListener("click", () => loadScriptFromLibrary(btn.getAttribute("data-load")));
+      });
+
+      root.querySelectorAll("[data-delete]").forEach(btn => {
+        btn.addEventListener("click", () => deleteScriptFromLibrary(btn.getAttribute("data-delete")));
+      });
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function saveCurrentScriptToLibrary() {
+      const text = String(els.scriptInput.value || "").trim();
+      const fileName = String(els.fileNameInput.value || "teleprompter-script.txt").trim();
+
+      if (!text) {
+        alert("There is no script text to save.");
+        return;
+      }
+
+      pruneExpiredScripts();
+
+      const existingByName = state.scriptLibrary.find(item => item.name === fileName);
+      const ts = nowMs();
+
+      if (existingByName) {
+        existingByName.text = els.scriptInput.value;
+        existingByName.updatedAt = ts;
+        state.activeScriptId = existingByName.id;
+      } else {
+        const item = {
+          id: uid(),
+          name: fileName,
+          text: els.scriptInput.value,
+          createdAt: ts,
+          updatedAt: ts
+        };
+        state.scriptLibrary.push(item);
+        state.activeScriptId = item.id;
+      }
+
+      state.text = els.scriptInput.value;
+      state.fileName = fileName;
+      saveState();
+      renderScriptLibrary();
+    }
+
+    function loadScriptFromLibrary(id) {
+      pruneExpiredScripts();
+      const item = state.scriptLibrary.find(entry => entry.id === id);
+      if (!item) return;
+
+      item.updatedAt = nowMs();
+      state.activeScriptId = item.id;
+      state.text = item.text || "";
+      state.fileName = item.name || "teleprompter-script.txt";
+
+      els.scriptInput.value = state.text;
+      els.fileNameInput.value = state.fileName;
+
+      saveState();
+      renderScriptLibrary();
+    }
+
+    function deleteScriptFromLibrary(id) {
+      const item = state.scriptLibrary.find(entry => entry.id === id);
+      if (!item) return;
+
+      if (!confirm(`Delete "${item.name}"?`)) return;
+
+      state.scriptLibrary = state.scriptLibrary.filter(entry => entry.id !== id);
+      if (state.activeScriptId === id) state.activeScriptId = null;
+      saveState();
+      renderScriptLibrary();
+    }
+
     function setupSpeechRecognition() {
       if (!SpeechRecognition) {
         els.voiceModeInput.disabled = true;
@@ -576,7 +781,7 @@
       els.resetScriptBtn.addEventListener("click", resetScriptPositionKeepSpeed);
 
       els.clearSettingsBtn.addEventListener("click", () => {
-        if (!confirm("Reset all settings and script?")) return;
+        if (!confirm("Reset all settings, current script, and script library?")) return;
         localStorage.removeItem(STORAGE_KEY);
         location.reload();
       });
@@ -667,7 +872,12 @@
       });
 
       els.importBtn.addEventListener("click", () => els.fileInput.click());
-      els.fileInput.addEventListener("change", importScriptFile);
+      els.fileInput.addEventListener("change", importSingleIntoEditor);
+
+      els.importLibraryBtn.addEventListener("click", () => els.libraryFileInput.click());
+      els.libraryFileInput.addEventListener("change", importMultipleIntoLibrary);
+
+      els.saveCurrentScriptBtn.addEventListener("click", saveCurrentScriptToLibrary);
       els.exportTxtBtn.addEventListener("click", exportTxtFile);
 
       els.scriptInput.addEventListener("input", () => {
@@ -727,25 +937,30 @@
       window.addEventListener("keydown", handler, true);
     }
 
-    function importScriptFile(event) {
+    function parseImportedText(file, rawText) {
+      let text = String(rawText || "");
+      if (file.name.toLowerCase().endsWith(".rtf")) {
+        text = text
+          .replace(/\\par[d]?/g, "\n")
+          .replace(/\\[a-zA-Z]+-?\d* ?/g, "")
+          .replace(/[{}]/g, "")
+          .trim();
+      }
+      return text;
+    }
+
+    function importSingleIntoEditor(event) {
       const file = event.target.files && event.target.files[0];
       if (!file) return;
 
       const reader = new FileReader();
-
       reader.onload = () => {
-        let text = String(reader.result || "");
-
-        if (file.name.toLowerCase().endsWith(".rtf")) {
-          text = text
-            .replace(/\\par[d]?/g, "\n")
-            .replace(/\\[a-zA-Z]+-?\d* ?/g, "")
-            .replace(/[{}]/g, "")
-            .trim();
-        }
+        const text = parseImportedText(file, reader.result);
 
         state.text = text;
         state.fileName = file.name;
+        state.activeScriptId = null;
+
         els.scriptInput.value = text;
         els.fileNameInput.value = file.name;
 
@@ -755,9 +970,49 @@
         resetVoiceController();
 
         saveState();
+        els.fileInput.value = "";
       };
 
       reader.readAsText(file);
+    }
+
+    async function importMultipleIntoLibrary(event) {
+      const files = Array.from(event.target.files || []);
+      if (!files.length) return;
+
+      pruneExpiredScripts();
+
+      for (const file of files) {
+        const text = await readFileAsText(file).then(raw => parseImportedText(file, raw));
+        const ts = nowMs();
+        const existing = state.scriptLibrary.find(item => item.name === file.name);
+
+        if (existing) {
+          existing.text = text;
+          existing.updatedAt = ts;
+        } else {
+          state.scriptLibrary.push({
+            id: uid(),
+            name: file.name,
+            text,
+            createdAt: ts,
+            updatedAt: ts
+          });
+        }
+      }
+
+      saveState();
+      renderScriptLibrary();
+      els.libraryFileInput.value = "";
+    }
+
+    function readFileAsText(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = reject;
+        reader.readAsText(file);
+      });
     }
 
     function exportTxtFile() {
@@ -1088,7 +1343,7 @@
       const now = performance.now();
       voiceCurrentLine = 0;
       voiceLineProgress = 0;
-      voiceCurrentWPM = 140;
+      voiceCurrentWPM = 145;
       voiceSessionStartTime = now;
       voicePrevLine = 0;
       voicePrevLineTime = now;
@@ -1097,8 +1352,7 @@
       voicePhantomScroll = getVoiceStartScroll();
       voiceStarted = false;
       voiceLastSpeechTime = 0;
-      voiceLastMatchedCorpus = [];
-      voiceSilenceFade = 0;
+      voiceLastStrongMatchTime = 0;
     }
 
     function getIdealScrollForLine(lineIndex) {
@@ -1109,63 +1363,93 @@
 
     function getTotalWordCount() {
       let total = 0;
-      for (let i = 0; i < lineWords.length; i++) {
-        total += lineWords[i].length;
-      }
+      for (let i = 0; i < lineWords.length; i++) total += lineWords[i].length;
       return total;
     }
 
     function getCumulativeWordsUpTo(lineIndex) {
       let total = 0;
-      for (let i = 0; i <= lineIndex && i < lineWords.length; i++) {
-        total += lineWords[i].length;
-      }
+      for (let i = 0; i <= lineIndex && i < lineWords.length; i++) total += lineWords[i].length;
       return total;
     }
 
-    function updateVoiceScroll(dt, now) {
+    function updateVoiceScroll(dt, nowPerf) {
       if (!voiceStarted) {
         currentSpeed = 0;
         return;
       }
 
-      const msSinceSpeech = now - voiceLastSpeechTime;
-      let activityFactor = 1;
+      const now = nowPerf;
+      const sinceSpeech = voiceLastSpeechTime ? (now - voiceLastSpeechTime) : 999999;
+      const sinceStrongMatch = voiceLastStrongMatchTime ? (now - voiceLastStrongMatchTime) : 999999;
 
-      if (msSinceSpeech <= voiceSilenceHoldMs) {
+      let activityFactor = 1;
+      if (sinceSpeech <= voiceSilenceHoldMs) {
         activityFactor = 1;
-      } else if (msSinceSpeech >= voiceSilenceStopMs) {
+      } else if (sinceSpeech >= voiceSilenceStopMs) {
         activityFactor = 0;
       } else {
-        const t = (msSinceSpeech - voiceSilenceHoldMs) / (voiceSilenceStopMs - voiceSilenceHoldMs);
+        const t = (sinceSpeech - voiceSilenceHoldMs) / (voiceSilenceStopMs - voiceSilenceHoldMs);
         activityFactor = 1 - t;
       }
 
+      const currentTarget = getIdealScrollForLine(voiceCurrentLine);
+      const nextTarget = getIdealScrollForLine(Math.min(lines.length - 1, voiceCurrentLine + 1));
+
+      let progress = clamp(voiceLineProgress, 0, 1);
+
+      // Encourage smoother crossover near end-of-line.
+      if (progress > 0.72) {
+        progress = 0.72 + (progress - 0.72) * 1.35;
+      }
+      progress = clamp(progress, 0, 1);
+
+      const focusTarget = currentTarget + progress * (nextTarget - currentTarget);
+
       const totalWords = getTotalWordCount();
-      const wordsPerSecond = voiceCurrentWPM / 60;
-      const estimatedBaseSpeed = totalWords > 0
-        ? (maxScroll * wordsPerSecond) / totalWords
-        : voiceMinCruisePxPerSec;
+      const basePxPerSec = totalWords > 0
+        ? (maxScroll * (voiceCurrentWPM / 60)) / totalWords
+        : voiceCruiseMinPxPerSec;
 
-      const currentLineTarget = getIdealScrollForLine(voiceCurrentLine);
-      const nextLineTarget = getIdealScrollForLine(Math.min(lines.length - 1, voiceCurrentLine + 1));
+      // Main improvement:
+      // aggressively close focus-bar error, not just gently chase it.
+      const focusError = focusTarget - scrollPos;
+      const followSpeed = Math.max(0, focusError * voiceSpringFactor);
 
-      const easedProgress = clamp(voiceLineProgress, 0, 1);
-      const focusTarget = currentLineTarget + easedProgress * (nextLineTarget - currentLineTarget);
+      // Extra catch-up if we are materially behind target.
+      const catchupSpeed = Math.max(0, focusError * voiceCatchupBoostFactor * 0.35);
 
-      const cruiseSpeed = Math.max(voiceMinCruisePxPerSec, estimatedBaseSpeed * 0.35) * activityFactor;
+      let cruiseSpeed = Math.max(voiceCruiseMinPxPerSec, basePxPerSec * 0.55);
+
+      // If recognition has gone stale, rely less on cruise.
+      if (sinceStrongMatch > voiceRelevantMatchKeepaliveMs) {
+        cruiseSpeed *= 0.55;
+      }
+
+      cruiseSpeed *= activityFactor;
+
+      // Phantom target never goes backward.
       voicePhantomScroll = Math.max(voicePhantomScroll, focusTarget);
       voicePhantomScroll = Math.min(maxScroll, voicePhantomScroll + cruiseSpeed * dt);
 
-      const error = voicePhantomScroll - scrollPos;
-      let pxPerSec = clamp(error * voiceSpringFactor, 0, voiceMaxSpeedPxPerSec);
+      const phantomError = Math.max(0, voicePhantomScroll - scrollPos);
 
-      if (activityFactor < 1) {
-        pxPerSec *= activityFactor;
+      let speed = Math.max(
+        followSpeed,
+        catchupSpeed,
+        phantomError * 6.5
+      );
+
+      speed = Math.min(speed, voiceMaxSpeedPxPerSec);
+      speed *= activityFactor;
+
+      // If we are very close and speech has faded, settle down.
+      if (Math.abs(focusError) < 2 && activityFactor < 0.2) {
+        speed = 0;
       }
 
-      currentSpeed = pxPerSec;
-      scrollPos += pxPerSec * dt;
+      currentSpeed = speed;
+      scrollPos += speed * dt;
       scrollPos = clamp(scrollPos, 0, maxScroll);
     }
 
@@ -1199,11 +1483,11 @@
       voiceInterimBuffer = latestInterim.trim();
 
       const finalWords = splitWords(voiceFinalBuffer);
-      if (finalWords.length > 60) {
-        voiceFinalBuffer = finalWords.slice(-60).join(" ") + " ";
+      if (finalWords.length > 80) {
+        voiceFinalBuffer = finalWords.slice(-80).join(" ") + " ";
       }
 
-      const corpus = splitWords(voiceFinalBuffer).slice(-16).concat(splitWords(voiceInterimBuffer));
+      const corpus = splitWords(voiceFinalBuffer).slice(-20).concat(splitWords(voiceInterimBuffer));
       if (!corpus.length) return;
 
       const match = findBestLineMatch(corpus);
@@ -1215,6 +1499,8 @@
       if (!voiceStarted) {
         if (lineIndex === 0 && score >= voiceStartThreshold) {
           voiceStarted = true;
+          voiceLastSpeechTime = now;
+          voiceLastStrongMatchTime = now;
         } else {
           return;
         }
@@ -1224,16 +1510,18 @@
       if (lineIndex < voiceCurrentLine) return;
 
       voiceLastSpeechTime = now;
-      voiceLastMatchedCorpus = corpus;
+      if (score >= voiceMatchThreshold) {
+        voiceLastStrongMatchTime = now;
+      }
 
       if (lineIndex > voicePrevLine) {
         const wordsAdvanced = getCumulativeWordsUpTo(lineIndex) - getCumulativeWordsUpTo(voicePrevLine);
         const timeAdvanced = (now - voicePrevLineTime) / 1000;
 
-        if (wordsAdvanced > 0 && timeAdvanced > 0.3) {
+        if (wordsAdvanced > 0 && timeAdvanced > 0.25) {
           const measuredWPM = (wordsAdvanced / timeAdvanced) * 60;
           if (measuredWPM >= voiceMinWPM && measuredWPM <= voiceMaxWPM) {
-            voiceCurrentWPM = (voiceCurrentWPM * 0.72) + (measuredWPM * 0.28);
+            voiceCurrentWPM = (voiceCurrentWPM * 0.65) + (measuredWPM * 0.35);
           }
         }
 
@@ -1242,7 +1530,7 @@
       }
 
       voiceCurrentLine = lineIndex;
-      voiceLineProgress = clamp(progress, 0.02, 0.98);
+      voiceLineProgress = clamp(progress, 0.04, 0.995);
 
       const lineScroll = getIdealScrollForLine(lineIndex);
       const nextScroll = getIdealScrollForLine(Math.min(lines.length - 1, lineIndex + 1));
@@ -1298,10 +1586,9 @@
         }
       }
 
-      const score = matched / lineWordsArr.length;
-      const progress = lastMatchIdx >= 0
-        ? (lastMatchIdx + 1) / lineWordsArr.length
-        : 0;
+      // Slightly favor later-word matches so end-of-line movement is more responsive.
+      const progress = lastMatchIdx >= 0 ? (lastMatchIdx + 1) / lineWordsArr.length : 0;
+      const score = (matched / lineWordsArr.length) * 0.7 + progress * 0.3;
 
       return { score, progress };
     }
