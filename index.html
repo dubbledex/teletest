@@ -416,6 +416,7 @@
     let isListening = false;
 
     let voiceCurrentLine = 0;
+    let voiceDetectedLine = 0;
     let voiceLineProgress = 0;
     let voiceCurrentWPM = 145;
     let voiceSessionStartTime = 0;
@@ -1404,6 +1405,21 @@
       progress = clamp(progress, 0, 1);
 
       const focusTarget = currentTarget + progress * (nextTarget - currentTarget);
+      /*
+        If speech has fallen behind,
+        stop and wait.
+        */
+
+      if (
+        voiceDetectedLine <
+        voiceCurrentLine - 2
+      ) {
+
+        currentSpeed =
+        currentSpeed * 0.85;
+
+        return;
+      }
 
       const totalWords = getTotalWordCount();
       const basePxPerSec = totalWords > 0
@@ -1486,7 +1502,7 @@
         voiceFinalBuffer = finalWords.slice(-80).join(" ") + " ";
       }
 
-      const corpus = splitWords(voiceFinalBuffer).slice(-60).concat(splitWords(voiceInterimBuffer));
+      const corpus = splitWords(voiceFinalBuffer).slice(-120).concat(splitWords(voiceInterimBuffer));
       if (!corpus.length) return;
 
       const match = findBestLineMatch(corpus);
@@ -1505,8 +1521,23 @@
         }
       }
 
-      if (!isLinePlausible(lineIndex, now)) return;
-      if (lineIndex < voiceCurrentLine) return;
+      if (!isLinePlausible(lineIndex, now))
+        return;
+    
+    /*
+     Allow tracker recovery.
+    
+     We can move tracking backwards,
+     but not scrolling.
+    */
+    
+    if (
+        lineIndex <
+        voiceCurrentLine - 8 &&
+        score < 0.55
+    ) {
+        return;
+    }
 
       voiceLastSpeechTime = now;
       if (score >= voiceMatchThreshold) {
@@ -1528,7 +1559,33 @@
         voicePrevLineTime = now;
       }
 
-      voiceCurrentLine = lineIndex;
+      voiceDetectedLine = lineIndex;
+
+    /*
+    Allow strong matches
+    to re-lock tracker.
+    */
+
+    if (
+    score > 0.60
+    ) {
+
+        voiceCurrentLine =
+            lineIndex;
+
+    } else {
+
+        /*
+          slow convergence
+        */
+
+    voiceCurrentLine =
+        Math.round(
+            voiceCurrentLine * 0.85 +
+            lineIndex * 0.15
+        );
+
+    }
       voiceLineProgress = clamp(progress, 0.01, 1);
 
       const lineScroll = getIdealScrollForLine(lineIndex);
@@ -1562,35 +1619,89 @@
       return best && best.score >= voiceMatchThreshold ? best : null;
     }
 
-    function scoreLineMatch(lineWordsArr, corpusWords) {
-      if (!lineWordsArr || !lineWordsArr.length || !corpusWords.length) {
-        return { score: 0, progress: 0 };
-      }
+function scoreLineMatch(
+    lineWordsArr,
+    corpusWords
+) {
 
-      const counts = new Map();
-      for (const word of corpusWords) {
-        counts.set(word, (counts.get(word) || 0) + 1);
-      }
+    if (
+        !lineWordsArr ||
+        !lineWordsArr.length ||
+        !corpusWords.length
+    ) {
 
-      let matched = 0;
-      let lastMatchIdx = -1;
+        return {
+            score: 0,
+            progress: 0
+        };
 
-      for (let i = 0; i < lineWordsArr.length; i++) {
-        const word = lineWordsArr[i];
-        const available = counts.get(word) || 0;
-        if (available > 0) {
-          matched += 1;
-          lastMatchIdx = i;
-          counts.set(word, available - 1);
-        }
-      }
-
-      // Slightly favor later-word matches so end-of-line movement is more responsive.
-      const progress = lastMatchIdx >= 0 ? (lastMatchIdx + 1) / lineWordsArr.length : 0;
-      const score = (matched / lineWordsArr.length) * 0.7 + progress * 0.3;
-
-      return { score, progress };
     }
+
+    let matched = 0;
+    let longestRun = 0;
+    let currentRun = 0;
+    let lastMatchIdx = -1;
+
+    for (
+        let i = 0;
+        i < lineWordsArr.length;
+        i++
+    ) {
+
+        const word =
+            lineWordsArr[i];
+
+        const pos =
+            corpusWords.lastIndexOf(
+                word
+            );
+
+        if (pos >= 0) {
+
+            matched++;
+
+            currentRun++;
+
+            if (
+                currentRun >
+                longestRun
+            ) {
+
+                longestRun =
+                    currentRun;
+
+            }
+
+            lastMatchIdx = i;
+
+        } else {
+
+            currentRun = 0;
+
+        }
+    }
+
+    const progress =
+        lastMatchIdx >= 0
+            ? (lastMatchIdx + 1) /
+              lineWordsArr.length
+            : 0;
+
+    const score =
+        (
+            matched /
+            lineWordsArr.length
+        ) * 0.55 +
+        (
+            longestRun /
+            lineWordsArr.length
+        ) * 0.45;
+
+    return {
+        score,
+        progress
+    };
+}
 
     function getMaxPlausibleLine(now) {
       const elapsedSec = Math.max(0.1, (now - voiceSessionStartTime) / 1000);
