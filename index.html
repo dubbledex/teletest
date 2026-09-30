@@ -439,11 +439,11 @@
     const voiceMinWPM = 85;
     const voiceMaxWPM = 290;
     const voiceMaxSpeedPxPerSec = 1400;
-    const voiceSpringFactor = 12.5;
-    const voiceCatchupBoostFactor = 18.0;
-    const voiceSearchAheadLines = 7;
-    const voiceMatchThreshold = 0.28;
-    const voiceStartThreshold = 0.40;
+    const voiceSpringFactor = 16.0;
+    const voiceCatchupBoostFactor = 24.0;
+    const voiceSearchAheadLines = 12;
+    const voiceMatchThreshold = 0.15;
+    const voiceStartThreshold = 0.22;
     const plausibilityBurstMultiplier = 1.7;
     const voiceSilenceHoldMs = 900;
     const voiceSilenceStopMs = 2600;
@@ -1486,7 +1486,7 @@
         voiceFinalBuffer = finalWords.slice(-80).join(" ") + " ";
       }
 
-      const corpus = splitWords(voiceFinalBuffer).slice(-20).concat(splitWords(voiceInterimBuffer));
+      const corpus = splitWords(voiceFinalBuffer).slice(-40).concat(splitWords(voiceInterimBuffer));
       if (!corpus.length) return;
 
       const match = findBestLineMatch(corpus);
@@ -1529,7 +1529,7 @@
       }
 
       voiceCurrentLine = lineIndex;
-      voiceLineProgress = clamp(progress, 0.04, 0.995);
+      voiceLineProgress = clamp(progress, 0.01, 1);
 
       const lineScroll = getIdealScrollForLine(lineIndex);
       const nextScroll = getIdealScrollForLine(Math.min(lines.length - 1, lineIndex + 1));
