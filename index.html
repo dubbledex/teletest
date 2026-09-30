@@ -440,7 +440,7 @@
     const voiceMaxSpeedPxPerSec = 2200;
 
     /*
-     * Voice limits
+     * Voice Limits
      */
     const voiceMinWPM = 80;
     const voiceMaxWPM = 320;
@@ -520,7 +520,7 @@
     }
 
     function cacheElements() {
-             "startSpeedInput", "startSpeedLabel",
+     SpeedLabel",
         "presenterPresetBtn", "resetBindingsBtn",
         "scriptInput", "fileNameInput", "importBtn", "fileInput", "exportTxtBtn",
         "mobileExitBtn", "resetScriptBtn", "voiceToggleBtn", "voiceStatusText",
@@ -761,7 +761,7 @@
       recognition.onstart = () => {
         isListening = true;
         updateVoiceUI();
-        console.log("Speech recognition started successfully.");
+        console.log("Speech recognition active.");
       };
 
       recognition.onresult = handleSpeechResult;
@@ -1099,7 +1099,6 @@
       return code === "PageDown" || key === "PageDown" || code === "ArrowRight" || key === "ArrowRight";
     }
 
-    // Fixed typo: was previously looking for incorrect function properties inside helper check block.
     function isCommonPreviousKey(code, key) {
       return code === "PageUp" || key === "PageUp" || code === "ArrowLeft" || key === "ArrowLeft";
     }
@@ -1239,8 +1238,7 @@
       ctx.save();
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      const bg = hexToRgb(state.bgColor);
- [
+      const bg = hexToRgb(state [
         "setupPage", "prompterPage", "prompterCanvas",
         "startPromptBtn", "clearSettingsBtn", "flipHBtn", "flipVBtn",
         "textSizeInput", "textSizeLabel", "indentInput", "indentLabel",
@@ -1248,6 +1246,7 @@
         "focusEnabledInput", "focusHeightInput", "focusHeightLabel",
         "focusOffsetInput", "focusOffsetLabel",
         "voiceModeInput", "showVoiceHighlightInput",
+        "startSpeedInput", "start.bgColor);
       ctx.fillStyle = `rgba(${bg.r}, ${bg.g}, ${bg.b}, ${state.bgOpacity / 100})`;
       ctx.fillRect(0, 0, canvasW, canvasH);
 
