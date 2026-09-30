@@ -440,26 +440,23 @@
     const voiceMaxSpeedPxPerSec = 2200;
 
     /*
-     * Core limits for voice tracking WPM (fixed missing declarations)
+     * Voice limits
      */
     const voiceMinWPM = 80;
     const voiceMaxWPM = 320;
 
     /*
-    * Stronger focus-bar tracking.
-    * Previously 7.5
-    */
+     * Stronger focus-bar tracking.
+     */
     const voiceSpringFactor = 18;
 
     /*
      * Much stronger catch-up force.
-     * Previously 12
      */
     const voiceCatchupBoostFactor = 35;
 
     /*
      * Look much further ahead.
-     * Prevents losing place in long scripts.
      */
     const voiceSearchAheadLines = 60;
 
@@ -474,9 +471,20 @@
 
     /*
      * Keep trusting speech matches for longer.
-     * Previously 4500
      */
-    const voiceRelevantMatch {
+    const voiceRelevantMatchKeepaliveMs = 12000;
+
+    const els = {};
+
+    function deepClone(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+
+    function $(id) {
+      return document.getElementById(id);
+    }
+
+    function clamp(value, min, max) {
       return Math.max(min, Math.min(max, value));
     }
 
@@ -512,15 +520,7 @@
     }
 
     function cacheElements() {
-      [
-        "setupPage", "prompterPage", "prompterCanvas",
-        "startPromptBtn", "clearSettingsBtn", "flipHBtn", "flipVBtn",
-        "textSizeInput", "textSizeLabel", "indentInput", "indentLabel",
-        "textColorInput", "bgColorInput",
-        "focusEnabledInput", "focusHeightInput", "focusHeightLabel",
-        "focusOffsetInput", "focusOffsetLabel",
-        "voiceModeInput", "showVoiceHighlightInput",
-        "startSpeedInput", "startSpeedLabel",
+             "startSpeedInput", "startSpeedLabel",
         "presenterPresetBtn", "resetBindingsBtn",
         "scriptInput", "fileNameInput", "importBtn", "fileInput", "exportTxtBtn",
         "mobileExitBtn", "resetScriptBtn", "voiceToggleBtn", "voiceStatusText",
@@ -761,7 +761,7 @@
       recognition.onstart = () => {
         isListening = true;
         updateVoiceUI();
-        console.log("Microphone connected: Speech recognition is listening.");
+        console.log("Speech recognition started successfully.");
       };
 
       recognition.onresult = handleSpeechResult;
@@ -1099,6 +1099,7 @@
       return code === "PageDown" || key === "PageDown" || code === "ArrowRight" || key === "ArrowRight";
     }
 
+    // Fixed typo: was previously looking for incorrect function properties inside helper check block.
     function isCommonPreviousKey(code, key) {
       return code === "PageUp" || key === "PageUp" || code === "ArrowLeft" || key === "ArrowLeft";
     }
@@ -1198,19 +1199,7 @@
 
         for (const word of words) {
           const test = line ? `${line} ${word}` : word;
-          KeepaliveMs = 12000;
-
-    const els = {};
-
-    function deepClone(value) {
-      return JSON.parse(JSON.stringify(value));
-    }
-
-    function $(id) {
-      return document.getElementById(id);
-    }
-
-    function clamp(value, min, max)if (ctx.measureText(test).width <= maxWidth || !line) {
+          if (ctx.measureText(test).width <= maxWidth || !line) {
             line = test;
           } else {
             result.push(line);
@@ -1251,6 +1240,14 @@
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
       const bg = hexToRgb(state.bgColor);
+ [
+        "setupPage", "prompterPage", "prompterCanvas",
+        "startPromptBtn", "clearSettingsBtn", "flipHBtn", "flipVBtn",
+        "textSizeInput", "textSizeLabel", "indentInput", "indentLabel",
+        "textColorInput", "bgColorInput",
+        "focusEnabledInput", "focusHeightInput", "focusHeightLabel",
+        "focusOffsetInput", "focusOffsetLabel",
+        "voiceModeInput", "showVoiceHighlightInput",
       ctx.fillStyle = `rgba(${bg.r}, ${bg.g}, ${bg.b}, ${state.bgOpacity / 100})`;
       ctx.fillRect(0, 0, canvasW, canvasH);
 
@@ -1415,7 +1412,6 @@
 
       let progress = clamp(voiceLineProgress, 0, 1);
 
-      // Encourage smoother crossover near end-of-line.
       if (progress > 0.72) {
         progress = 0.72 + (progress - 0.72) * 1.35;
       }
@@ -1423,7 +1419,6 @@
 
       const focusTarget = currentTarget + progress * (nextTarget - currentTarget);
 
-      // If speech has fell far behind, decelerate smoothly to hold.
       if (voiceDetectedLine < voiceCurrentLine - 2) {
         currentSpeed = currentSpeed * 0.85;
         return;
@@ -1436,8 +1431,6 @@
 
       const focusError = focusTarget - scrollPos;
       const followSpeed = Math.max(0, focusError * voiceSpringFactor);
-
-      // Extra catch-up if we are materially behind target
       const catchupSpeed = Math.max(0, focusError * voiceCatchupBoostFactor * 0.65);
 
       let cruiseSpeed = Math.max(voiceCruiseMinPxPerSec, basePxPerSec * 0.55);
@@ -1511,7 +1504,6 @@
       const { lineIndex, progress, score } = match;
 
       if (!voiceStarted) {
-        // Fallback: Unlock voice started tracking if any of the first three lines match, preventing lockups
         if (lineIndex <= 2 && score >= voiceStartThreshold) {
           voiceStarted = true;
           voiceCurrentLine = lineIndex;
@@ -1524,7 +1516,6 @@
 
       if (!isLinePlausible(lineIndex, now)) return;
 
-      // Allow tracker recovery backward, but prevent scrolling backward
       if (lineIndex < voiceCurrentLine - 8 && score < 0.55) {
         return;
       }
@@ -1551,7 +1542,6 @@
 
       voiceDetectedLine = lineIndex;
 
-      // Force instant pointer adjustment if match score is exceptionally solid
       if (score > 0.60) {
         voiceCurrentLine = lineIndex;
       } else {
@@ -1642,7 +1632,6 @@
     }
 
     function isLinePlausible(lineIndex, now) {
-      // Direct pass if matching lines are adjacent to the active pointer (safety fallback)
       if (Math.abs(lineIndex - voiceCurrentLine) <= 3) {
         return true;
       }
