@@ -1405,99 +1405,333 @@ function updateVoiceScroll(dt, nowPerf) {
       const sinceSpeech = voiceLastSpeechTime ? (now - voiceLastSpeechTime) : 999999;
       
       // 2. ACTIVITY FACTOR (Pause on Lag)
-      // 1.0 = Speaking, 0.0 = Silent. Smooth transition.
-      let activityFactor = 1.0;
-      if (sinceSpeech > voiceSilenceHoldMs) {
-        if (sinceSpeech >= voiceSilenceStopMs) {
-          activityFactor = 0.0;
-        } else {
-          const t = (sinceSpeech - voiceSilenceHoldMs) / (voiceSilenceStopMs - voiceSilenceHoldMs);
-          activityFactor = 1.0 - t;
-        }
+      // Determines if we should move (1.0) or stop (0.0) based on silence.
+      let activityFactor = 0;
+      if (sinceSpeech <= voiceSilenceHoldMs) {
+        activityFactor = 1.0;
+      } else if (sinceSpeech >= voiceSilenceStopMs) {
+        activityFactor = 0.0;
+      } else {
+        // Smooth decay between hold and stop
+        const t = (sinceSpeech - voiceSilenceHoldMs) / (voiceSilenceStopMs - voiceSilenceHoldMs);
+        activityFactor = 1.0 - t;
       }
 
       // 3. CALCULATE IDEAL TARGET POSITION
-      // Where SHOULD the screen be right now based on voice?
+      // Where SHOULD we be based on the current detected line?
       const currentTarget = getIdealScrollForLine(voiceCurrentLine);
       const nextTarget = getIdealScrollForLine(Math.min(lines.length - 1, voiceCurrentLine + 1));
       
+      // Interpolate within the line based on progress (0.0 to 1.0)
       let progress = clamp(voiceLineProgress, 0, 1);
       
-      // Smooth end-of-line transition
-      if (progress > 0.8) {
-        progress = 0.8 + (progress - 0.8) * 1.25;
+      // Smooth out the end-of-line transition to prevent jitter
+      if (progress > 0.75) {
+        progress = 0.75 + (progress - 0.75) * 1.5;
       }
       progress = clamp(progress, 0, 1);
 
-      let idealTarget = currentTarget + progress * (nextTarget - currentTarget);
+      const idealFocusTarget = currentTarget + progress * (nextTarget - currentTarget);
 
-      // 4. FORWARD-ONLY LOGIC (The "Ratchet")
-      // CRITICAL FIX: The target is allowed to move forward freely.
-      // It is NOT allowed to move backward. This prevents jumping up.
-      // We use a persistent 'voicePhantomScroll' to remember the furthest point reached.
-      if (idealTarget > voicePhantomScroll) {
-        voicePhantomScroll = idealTarget;
+      // 4. FORWARD-ONLY LOGIC (The "Ratchet" Mechanism)
+      // The target we chase (voicePhantomScroll) is NEVER allowed to decrease.
+      // This ensures no backwards motion on screen, even if recognition glitches.
+      if (idealFocusTarget > voicePhantomScroll) {
+        voicePhantomScroll = idealFocusTarget;
       }
       
-      // Cap at max scroll
-      if (voicePhantomScroll > maxScroll) {
-        voicePhantomScroll = maxScroll;
-      }
+      // Ensure phantom scroll never exceeds max
+      voicePhantomScroll = Math.min(voicePhantomScroll, maxScroll);
 
-      // 5. CALCULATE ERROR & SPEED
-      // How far behind are we?
+      // 5. ERROR CALCULATION & STRONG RE-ALIGNMENT
+      // How far behind are we? (Positive means we are behind target)
       const errorGap = voicePhantomScroll - scrollPos;
 
-      // If we are behind, calculate speed.
-      // If we are ahead (shouldn't happen with ratchet), speed is 0.
       let targetSpeed = 0;
-      
-      if (errorGap > 1.0) {
-        // Strong Spring Force: Proportional to distance
-        const springSpeed = errorGap * voiceSpringFactor;
+
+      if (errorGap > 2) {
+        // We are behind. Calculate speed needed to catch up.
         
-        // Aggressive Catch-up Boost: If gap is large, add extra speed
-        const boostSpeed = errorGap > 50 ? (errorGap - 50) * (voiceCatchupBoostFactor * 0.1) : 0;
+        // Base spring force (proportional to error)
+        const springForce = errorGap * voiceSpringFactor; 
         
-        targetSpeed = springSpeed + boostSpeed;
+        // Extra boost for large gaps (Speech Recovery)
+        const catchupBoost = errorGap > 50 ? errorGap * (voiceCatchupBoostFactor / 10) : 0; 
         
-        // Hard Cap on speed
-        if (targetSpeed > voiceMaxSpeedPxPerSec) {
-          targetSpeed = voiceMaxSpeedPxPerSec;
-        }
+        targetSpeed = springForce + catchupBoost;
+        
+        // Cap maximum speed to prevent motion sickness
+        targetSpeed = Math.min(targetSpeed, voiceMaxSpeedPxPerSec);
+      } else {
+        // We are very close. Just gently align or stop.
+        targetSpeed = errorGap * 2.0; 
       }
 
-      // 6. APPLY ACTIVITY FACTOR
-      // If silence, reduce speed. 
-      // NOTE: We don't set to 0 immediately unless silence is total, to allow natural pauses.
-      if (activityFactor < 0.1) {
+      // 6. APPLY ACTIVITY FACTOR (Pause when speech lags)
+      // If silence is detected, force speed to 0 immediately.
+      if (activityFactor <= 0.1) {
         targetSpeed = 0;
       } else {
         targetSpeed *= activityFactor;
       }
 
-      // 7. SMOOTHING (LERP)
-      // Gently ease currentSpeed towards targetSpeed to prevent jitter.
-      // 0.2 is snappy enough to start moving immediately.
-      const smoothing = 0.2;
-      currentSpeed = currentSpeed + (targetSpeed - currentSpeed) * smoothing;
+      // 7. SMOOTHING (Damping)
+      // Instead of setting speed directly, we lerp current speed to target speed.
+      // This removes jitter and makes acceleration/deceleration feel physical.
+      // 0.15 is a good balance: snappy enough to catch up, smooth enough to not jitter.
+      const smoothingFactor = 0.15; 
+      currentSpeed = currentSpeed + (targetSpeed - currentSpeed) * smoothingFactor;
 
-      // Ensure no backward movement
+      // 8. APPLY MOVEMENT
+      // Ensure we never move backwards
       if (currentSpeed < 0) currentSpeed = 0;
 
-      // 8. UPDATE POSITION
       scrollPos += currentSpeed * dt;
-
-      // Clamp to bounds
-      if (scrollPos > maxScroll) {
+      
+      // Final clamp to ensure we never go out of bounds
+      scrollPos = clamp(scrollPos, 0, maxScroll);
+      
+      // Safety: If we hit the end, stop.
+      if (scrollPos >= maxScroll - 1) {
         scrollPos = maxScroll;
         currentSpeed = 0;
       }
-      if (scrollPos < 0) {
-        scrollPos = 0;
+    }
+
+    function normaliseForSpeech(text) {
+      return String(text || "")
+        .toLowerCase()
+        .replace(/[^\w\s']/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    function splitWords(text) {
+      const clean = normaliseForSpeech(text);
+      return clean ? clean.split(/\s+/) : [];
+    }
+
+    function handleSpeechResult(event) {
+      if (!state.voiceMode || !lines.length) return;
+
+      let latestInterim = "";
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const part = event.results[i][0].transcript || "";
+        if (event.results[i].isFinal) {
+          voiceFinalBuffer += part + " ";
+        } else {
+          latestInterim += part + " ";
+        }
+      }
+
+      voiceInterimBuffer = latestInterim.trim();
+
+      const finalWords = splitWords(voiceFinalBuffer);
+      if (finalWords.length > 80) {
+        voiceFinalBuffer = finalWords.slice(-80).join(" ") + " ";
+      }
+
+      const corpus = splitWords(voiceFinalBuffer).slice(-120).concat(splitWords(voiceInterimBuffer));
+      if (!corpus.length) return;
+
+      const match = findBestLineMatch(corpus);
+      if (!match) return;
+
+      const now = performance.now();
+      const { lineIndex, progress, score } = match;
+
+      if (!voiceStarted) {
+        if (lineIndex === 0 && score >= voiceStartThreshold) {
+          voiceStarted = true;
+          voiceLastSpeechTime = now;
+          voiceLastStrongMatchTime = now;
+        } else {
+          return;
+        }
+      }
+
+      if (!isLinePlausible(lineIndex, now))
+        return;
+    
+    /*
+     Allow tracker recovery.
+    
+     We can move tracking backwards,
+     but not scrolling.
+    */
+    
+    if (
+        lineIndex <
+        voiceCurrentLine - 8 &&
+        score < 0.55
+    ) {
+        return;
+    }
+
+      voiceLastSpeechTime = now;
+      if (score >= voiceMatchThreshold) {
+        voiceLastStrongMatchTime = now;
+      }
+
+      if (lineIndex > voicePrevLine) {
+        const wordsAdvanced = getCumulativeWordsUpTo(lineIndex) - getCumulativeWordsUpTo(voicePrevLine);
+        const timeAdvanced = (now - voicePrevLineTime) / 1000;
+
+        if (wordsAdvanced > 0 && timeAdvanced > 0.25) {
+          const measuredWPM = (wordsAdvanced / timeAdvanced) * 60;
+          if (measuredWPM >= voiceMinWPM && measuredWPM <= voiceMaxWPM) {
+            voiceCurrentWPM = (voiceCurrentWPM * 0.65) + (measuredWPM * 0.35);
+          }
+        }
+
+        voicePrevLine = lineIndex;
+        voicePrevLineTime = now;
+      }
+
+      voiceDetectedLine = lineIndex;
+
+    /*
+    Allow strong matches
+    to re-lock tracker.
+    */
+
+    if (
+    score > 0.60
+    ) {
+
+        voiceCurrentLine =
+            lineIndex;
+
+    } else {
+
+        /*
+          slow convergence
+        */
+
+    voiceCurrentLine =
+        Math.round(
+            voiceCurrentLine * 0.85 +
+            lineIndex * 0.15
+        );
+
+    }
+      voiceLineProgress = clamp(progress, 0.01, 1);
+
+      const lineScroll = getIdealScrollForLine(lineIndex);
+      const nextScroll = getIdealScrollForLine(Math.min(lines.length - 1, lineIndex + 1));
+      const recognisedScroll = lineScroll + voiceLineProgress * (nextScroll - lineScroll);
+
+      if (recognisedScroll > voicePhantomScroll) {
+        voicePhantomScroll = recognisedScroll;
       }
     }
 
+    function findBestLineMatch(corpusWords) {
+      const start = voiceStarted ? voiceCurrentLine : 0;
+      const end = voiceStarted
+        ? Math.min(lines.length - 1, voiceCurrentLine + voiceSearchAheadLines)
+        : Math.min(lines.length - 1, 2);
+
+      let best = null;
+
+      for (let i = start; i <= end; i++) {
+        const result = scoreLineMatch(lineWords[i], corpusWords);
+        if (!best || result.score > best.score) {
+          best = {
+            lineIndex: i,
+            score: result.score,
+            progress: result.progress
+          };
+        }
+      }
+
+      return best && best.score >= voiceMatchThreshold ? best : null;
+    }
+
+function scoreLineMatch(
+    lineWordsArr,
+    corpusWords
+) {
+
+    if (
+        !lineWordsArr ||
+        !lineWordsArr.length ||
+        !corpusWords.length
+    ) {
+
+        return {
+            score: 0,
+            progress: 0
+        };
+
+    }
+
+    let matched = 0;
+    let longestRun = 0;
+    let currentRun = 0;
+    let lastMatchIdx = -1;
+
+    for (
+        let i = 0;
+        i < lineWordsArr.length;
+        i++
+    ) {
+
+        const word =
+            lineWordsArr[i];
+
+        const pos =
+            corpusWords.lastIndexOf(
+                word
+            );
+
+        if (pos >= 0) {
+
+            matched++;
+
+            currentRun++;
+
+            if (
+                currentRun >
+                longestRun
+            ) {
+
+                longestRun =
+                    currentRun;
+
+            }
+
+            lastMatchIdx = i;
+
+        } else {
+
+            currentRun = 0;
+
+        }
+    }
+
+    const progress =
+        lastMatchIdx >= 0
+            ? (lastMatchIdx + 1) /
+              lineWordsArr.length
+            : 0;
+
+    const score =
+        (
+            matched /
+            lineWordsArr.length
+        ) * 0.55 +
+        (
+            longestRun /
+            lineWordsArr.length
+        ) * 0.45;
+
+    return {
+        score,
+        progress
+    };
+}
 
     function getMaxPlausibleLine(now) {
       const elapsedSec = Math.max(0.1, (now - voiceSessionStartTime) / 1000);
